@@ -1,0 +1,4 @@
+Text analyzer is an experimental program to do various types of text analysis. Presently, it counts the frequency of each word, and implements a function to find the minimum window in which a set of query strings exist in a given document.
+
+Try running
+textanalyzer (query1) (query2) ...
