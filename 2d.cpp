@@ -169,7 +169,7 @@ void exchange_position(position_state_t state)
 int main()
 {
 	int m, n;
-	m = 3, n = 3;
+	m = 2, n = 5;
 
 	int** grid = allocate_2d_array(m, n);
 
@@ -181,12 +181,12 @@ int main()
 	int done = 0;
 
 	grid[1][1] = -1;
-	grid[0][2] = -1;
+	grid[1][3] = -1;
 
 	pair_t a, b;
 
-	a.i = 0; a.j = 0;
-	b.i = 0; b.j = 1;
+	a.i = 1; a.j = 0;
+	b.i = 1; b.j = 2;
 
 	int p1 = INDEX(a.i, a.j, m, n);
 	int p2 = INDEX(b.i, b.j, m, n);
