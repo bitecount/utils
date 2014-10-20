@@ -49,10 +49,12 @@ def main(inputfile):
 	total_success = 0
 	total_failure = 0
 	total_disabled = 0
+	total_outofrange = 0
 	for group in suite:
 		success = 0
 		failure = 0
 		disabled = 0
+		outofrange = 0
 		endsuite = False
 		try:
 			if(group['disable']):
@@ -64,30 +66,40 @@ def main(inputfile):
 		l = group['commands']
 		l.sort(sortfunction)
 
+		try:
+			group_low = group['range'][0]
+			group_high = group['range'][1]
+			filter_range = True
+		except KeyError, IndexError:
+			filter_range = False	
+
 		cl = compact_list(l)
 		for batch in cl: #batch is a list of commands that can be run in parallel.
 			if endsuite:
 				break
 			child_process = []
 			for i in batch:
+				i['filter'] = False
 				try:
-					disable = i['disable']
+					i['disable']
 				except KeyError:
-					disable = False
-				if(disable):
+					i['disable'] = False
+				if(i['disable']):
 					disabled += 1
 					total_disabled += 1
 					print "Disabled: id=[" + str(i['id']) + "] command=[" + i['command'] + "]"
 					child_process.append(0)
+				elif(filter_range and (i['id'] < group_low or i['id'] > group_high)):
+					outofrange += 1
+					total_outofrange += 1
+					print "OutofRange: id=[" + str(i['id']) + "] [low=" + str(group_low) + "] high=[" + str(group_high) + "]"
+					i['filter'] = True
+					child_process.append(0)	
 				else:
 					print "Running: id=[" + str(i['id']) + "] command=[" + i['command'] + "]"
 					child_process.append(p.Popen(i['command'], shell=True))
 			for j, i in enumerate(batch):
-				try:
-					disable = i['disable']
-				except KeyError:
-					disable = False
-				if(disable): continue
+				if(i['disable'] or i['filter']): continue
 				try:
 					expected = i['success']
 				except KeyError:
@@ -114,8 +126,8 @@ def main(inputfile):
 						break
 
 		print "Completed: suite=[" + group['class'] + "]"
-		print "Completed: total=[" + str(success + failure + disabled) + "] success=[" + str(success) + "] failed=[" + str(failure) + "] disabled=[" + str(disabled) + "]"
-	print "Completed: total=[" + str(total_success + total_failure + total_disabled) + "] success=[" + str(total_success) + "] failed=[" + str(total_failure) + "] disabled=[" + str(total_disabled) + "]"
+		print "Completed: total=[" + str(success + failure + disabled + outofrange) + "] success=[" + str(success) + "] failed=[" + str(failure) + "] disabled=[" + str(disabled) + "] outofrange=[" + str(outofrange) + "]"
+	print "Completed: total=[" + str(total_success + total_failure + total_disabled + total_outofrange) + "] success=[" + str(total_success) + "] failed=[" + str(total_failure) + "] disabled=[" + str(total_disabled) + "] total_outofrange=[" + str(total_outofrange) + "]"
 	return 0
 
 if __name__ == '__main__':
