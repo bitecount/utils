@@ -1,4 +1,4 @@
-#! /usr/bin/python
+#!/usr/bin/python
 import sys
 import subprocess as p
 import json
@@ -78,12 +78,16 @@ def main(inputfile):
 					disabled += 1
 					total_disabled += 1
 					print "Disabled: id=[" + str(i['id']) + "] command=[" + i['command'] + "]"
-					batch.remove(i)
+					child_process.append(0)
 				else:
 					print "Running: id=[" + str(i['id']) + "] command=[" + i['command'] + "]"
 					child_process.append(p.Popen(i['command'], shell=True))
-
 			for j, i in enumerate(batch):
+				try:
+					disable = i['disable']
+				except KeyError:
+					disable = False
+				if(disable): continue
 				try:
 					expected = i['success']
 				except KeyError:
