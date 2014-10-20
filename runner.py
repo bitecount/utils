@@ -46,11 +46,20 @@ def main(inputfile):
 		print "Bad JSON file [" + inputfile + "]"
 		return -1
 
-	success = 0
-	failure = 0
-	disabled = 0
+	total_success = 0
+	total_failure = 0
+	total_disabled = 0
 	for group in suite:
+		success = 0
+		failure = 0
+		disabled = 0
 		endsuite = False
+		try:
+			if(group['disable']):
+				print "Disabled: suite=[" + group['class'] + "]"
+				continue
+		except KeyError:
+			pass
 		print "Running: suite=[" + group['class'] + "]"
 		l = group['commands']
 		l.sort(sortfunction)
@@ -67,6 +76,7 @@ def main(inputfile):
 					disable = False
 				if(disable):
 					disabled += 1
+					total_disabled += 1
 					print "Disabled: id=[" + str(i['id']) + "] command=[" + i['command'] + "]"
 					batch.remove(i)
 				else:
@@ -84,9 +94,11 @@ def main(inputfile):
 				if(retvalue == expected):
 					print "Success: id=[" + str(i['id']) + "] command=[" + i['command'] + "]"
 					success += 1
+					total_success += 1
 				else:
 					print "Failure: id=[" + str(i['id']) + "] command=[" + i['command'] + "] expected=[" + str(expected) + "] returned=[" + str(retvalue) + "]"
 					failure += 1
+					total_failure += 1
 					#Command failed; Check if the suit has 'stoponfail' attribute set to True. If so, abort. The default value 						#of the attribute is False, which means we don't stop the suite because of the failure of this command. 
 					try:
 						stop = group['stoponfail']
@@ -99,6 +111,7 @@ def main(inputfile):
 
 		print "Completed: suite=[" + group['class'] + "]"
 		print "Completed: total=[" + str(success + failure + disabled) + "] success=[" + str(success) + "] failed=[" + str(failure) + "] disabled=[" + str(disabled) + "]"
+	print "Completed: total=[" + str(total_success + total_failure + total_disabled) + "] success=[" + str(total_success) + "] failed=[" + str(total_failure) + "] disabled=[" + str(total_disabled) + "]"
 	return 0
 
 if __name__ == '__main__':
