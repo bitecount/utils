@@ -1,0 +1,27 @@
+[
+{
+	"class" : "ocr analysis",
+	"stoponfail" : false,
+	"commands" : [
+	{
+		"id" : 100,
+		"command" : "sleep 10",
+		"success" : 0
+	},
+	{
+		"id" : 100,
+		"command" : "date",
+		"success" : 0
+	},
+	{
+		"id" : 300,
+		"command" : "python another.py",
+		"success" : 0
+	},
+	{
+		"id" : 100,
+		"command" : "date"
+	}
+	]
+}
+]
