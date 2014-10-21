@@ -111,11 +111,25 @@ def main(inputfile):
 					print "Success: id=[" + str(i['id']) + "] command=[" + i['command'] + "]"
 					success += 1
 					total_success += 1
+					try:
+						i['onsuccess']
+						print "Running onsuccess: id=[" + str(i['id']) + "] command=[" + i['onsuccess'] + "]"
+						successnotify = p.Popen(i['onsuccess'], shell=True)
+						successnotify.wait()
+					except KeyError:
+						pass
 				else:
 					print "Failure: id=[" + str(i['id']) + "] command=[" + i['command'] + "] expected=[" + str(expected) + "] returned=[" + str(retvalue) + "]"
 					failure += 1
 					total_failure += 1
-					#Command failed; Check if the suit has 'stoponfail' attribute set to True. If so, abort. The default value 						#of the attribute is False, which means we don't stop the suite because of the failure of this command. 
+					#Command failed; Check if the suit has 'stoponfail' attribute set to True. If so, abort. The default value of the attribute is False, which means we don't stop the suite because of the failure of this command. 
+					try:
+						i['onfail']
+						print "Running onfail: id=[" + str(i['id']) + "] command=[" + i['onfail'] + "]"
+						failnotify = p.Popen(i['onfail'], shell=True)
+						failnotify.wait()
+					except KeyError:
+						pass
 					try:
 						stop = group['stoponfail']
 					except KeyError:
