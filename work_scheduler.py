@@ -4,6 +4,7 @@ import zmq
 import sys
 
 import subprocess
+from Queue import Queue
 
 class logger:
 
@@ -32,6 +33,8 @@ class message_types:
 	MESSAGE_TYPE_COMMAND_RESPONSE = 'COMMAND_RESPONSE'
 	MESSAGE_TYPE_INITIAL_HELLO = 'INIT_HELLO'
 	MESSAGE_TYPE_INITIAL_RESPONSE = 'INIT_RESPONSE'
+	MESSAGE_TYPE_SUBMIT_COMMAND_FOR_PROCESSING = 'SUBMIT_COMMAND_FOR_PROCESSING'
+	MESSAGE_TYPE_QUERY_COMMAND_PROCESSING_STATUS = 'QUERY_COMMAND_PROCESSING_STATUS'
 
 	def get_initial_response(self, assigned_client_id):
 
@@ -55,8 +58,14 @@ class message_types:
 	STATUS_OK = 'OK'
 	STATUS_KEEP_ALIVE = 'KEEP_ALIVE'
 	STATUS_ERROR = 'ERROR'
+	STATUS_CLOSING = 'CLOSING'
 
-	def get_status_message(self, node_status, node_id):
+	def get_more_info_from_status_message(self, message):
+
+		assert(self.is_message_of_type(message, message_types.MESSAGE_TYPE_STATUS_UPDATE))
+		return message['MORE_INFO']
+
+	def get_status_message(self, node_status, node_id, more_info = { }):
 
 		message = { }
 
@@ -66,6 +75,7 @@ class message_types:
 		assert(node_status in permitted_message_status_values)
 		message['STATUS'] = node_status
 		message['NODE_ID'] = node_id
+		message['MORE_INFO'] = more_info
 
 		return message
 
@@ -100,9 +110,25 @@ class message_types:
 
 		return message
 
+	def get_submit_command_message(self, node_id, command_details = { }):
+
+		message = self.get_command_message(message_types.COMMAND_TYPE_EXECUTE, node_id, command_details)
+		message['MESSAGE_TYPE'] = message_types.MESSAGE_TYPE_SUBMIT_COMMAND_FOR_PROCESSING
+		return message
+
+	def get_query_command_processing_message(self, node_id, command_reference_id):
+
+		message = { }
+
+		message['MESSAGE_TYPE'] = message_types.MESSAGE_TYPE_QUERY_COMMAND_PROCESSING_STATUS
+		message['NODE_ID'] = node_id
+		message['REFERENCE_ID'] = command_reference_id
+
+		return message
+
 	def get_command_details(self, message):
 
-		assert(self.is_message_of_type(message, message_types.MESSAGE_TYPE_COMMAND))
+		assert(self.is_message_of_type(message, message_types.MESSAGE_TYPE_COMMAND) or self.is_message_of_type(message, message_types.MESSAGE_TYPE_SUBMIT_COMMAND_FOR_PROCESSING))
 		return message['COMMAND_DETAILS']
 
 	def get_command_response_details(self, message):
@@ -154,7 +180,7 @@ class worker_client:
 		results_dict['SEQUENCE_NUMBER'] = sequence_number
 		results_dict['COMMAND_TO_RUN'] = command_to_run
 		results_dict['COMMAND_DIRECTORY'] = command_directory
-		results_dict['COMMAND_ARGUMENTS'] = command_argument
+		results_dict['COMMAND_ARGUMENTS'] = command_arguments
 		results_dict['COMMAND_OUTPUT'] = command_output
 		results_dict['TIME_TAKEN'] = time_taken
 
@@ -221,6 +247,63 @@ class worker_client:
 				if server_status == message_types.STATUS_KEEP_ALIVE:
 					time.sleep(default_sleep_interval)
 
+class job_submitter:
+
+	def __init__(self):
+
+		pass
+
+	def submit_job_and_get_result(self, program_name, arguments_list, directory_path = None):
+
+		json_response = { }
+		sleep_interval = 10
+
+		port = '6096'
+		context = zmq.Context()
+		socket = self.context.socket(zmq.REQ)
+		socket.connect('tcp://localhost:' + port)
+
+		message_types_obj = message_types()
+		logger_obj = logger()
+
+		# Step 0 - Initial hello message
+		message = message_types_obj.get_initial_hello_message()
+		socket.send_json(message)
+		response_message = socket.recv_json()
+		if message_types_obj.is_message_of_type(response_message, message_types.MESSAGE_TYPE_INITIAL_RESPONSE):
+			client_id = response_message['CLIENT_ID']
+			logger_obj.log(logger.LOG_LEVEL_INFO, 'Received initial hello response m=%s' %(response_message))
+		else:
+			## Unexpected response received from the server
+			logger_obj.log(logger.LOG_LEVEL_ERROR, 'Unexpected response received from server m=%s' %(response_message))
+			return json_response
+
+		command_details['COMMAND_TO_RUN'] = program_name
+		command_details['COMMAND_DIRECTORY'] = directory_path
+		command_details['COMMAND_ARGUMENTS'] = arguments_list
+
+		command_request = message_types_obj.get_command_message(message_types.COMMAND_TYPE_EXECUTE, client_id, command_details)
+		socket.send_json(command_request)
+
+		while True:
+
+			response_message = socket.recv_json()
+			if message_types_obj.is_message_of_type(response_message, message_types.MESSAGE_TYPE_STATUS_UPDATE):
+				if response_message['STATUS'] == message_types.STATUS_KEEP_ALIVE:
+					time.sleep(sleep_interval)
+				else:
+					return json_response
+			elif message_types_obj.is_message_of_type(response_message, message_types.MESSAGE_TYPE_COMMAND_RESPONSE):
+				response_details = message_types_obj.get_command_response_details(response_message)
+				json_response = { 'RESULT' : response_details }
+				return json_response
+			else:
+				# Error !
+				pass
+
+			keepalive_message = message_types_obj.get_status_message(message_types.STATUS_KEEP_ALIVE, client_id)
+			socket.send_json(keepalive_message)
+					
 class controller:
 
 	def __init__(self, logger_obj = None):
@@ -259,7 +342,7 @@ class controller:
 			user_input = user_input.strip()
 			
 			if user_input not in permitted_options:
-				self.logger_obj(logger.LOG_LEVEL_ERROR, 'Available options: %s' %(permitted_options))
+				self.logger_obj.log(logger.LOG_LEVEL_ERROR, 'Available options: %s' %(permitted_options))
 				continue
 			
 			if user_input == 'EXIT':
@@ -289,6 +372,10 @@ class worker_server:
 
 		self.next_client_id = 1024
 		self.client_id_dict = { }
+		self.next_submit_reference_id = 1024
+		self.pending_submit_dict = { }
+		self.reverse_submit_dict = { }
+		self.results_cache_dict = { }
 
 		if logger_obj:
 			self.logger_obj = logger_obj
@@ -328,10 +415,7 @@ class worker_server:
 				self.logger_obj.log(logger.LOG_LEVEL_INFO, 'Received command message m=%s' %(message))
 				command = message['COMMAND']
 				if(command == message_types.COMMAND_TYPE_GET_INFO):
-					command_response_details = { 'CURRENT_CLIENTS' : self.client_id_dict.keys() }
-				else:
-					command_response_details = { }
-				response_message = message_types_obj.get_command_response_message(command, self.server_node_id, command_response_details)
+					command_response_details = { 'CURRENT_CLIENTS' : self.client_id_dict }
 
 				self.socket.send_json(response_message)
 
@@ -342,9 +426,46 @@ class worker_server:
 				command_response_details = message_types_obj.get_command_response_details(message)	
 				self.logger_obj.log(logger.LOG_LEVEL_INFO, 'Received command response m=%s' %(message))
 
+				###### 
+				client_id = message['NODE_ID']
+				reference_id = self.reverse_submit_dict[client_id]
+				self.pending_submit_dict[reference_id] = ('DONE', client_id)
+				self.results_cache_dict[reference_id] = message
+
 				# Send OK response to the client
 				ok_response = message_types_obj.get_status_message(message_types.STATUS_OK, self.server_node_id)
 				self.socket.send_json(ok_response)
+
+			elif message_types_obj.is_message_of_type(message, message_types.MESSAGE_TYPE_SUBMIT_COMMAND_FOR_PROCESSING):
+
+				# Router has sent us a request for command processing. Just place this in processing queue.
+				self.logger_obj.log(logger.LOG_LEVEL_INFO, 'Received submit_command message m=%s' %(message))
+
+				command_details = message_types_obj.get_command_details(message)
+				command_details['REFERENCE_ID'] = reference_id = self.next_submit_reference_id
+				self.pending_submit_dict[self.next_submit_reference_id] = ('UNASSIGNED', 0)
+				self.next_submit_reference_id += 1
+
+				self.work_queue.put_command_in_queue(command_details)
+
+				more_info_dict = { }
+				more_info_dict['REFERENCE_ID'] = reference_id
+				# Send OK response to the client
+				ok_response = message_types_obj.get_status_message(message_types.STATUS_OK, self.server_node_id, more_info_dict)
+				self.socket.send_json(ok_response)
+			
+			elif message_types_obj.is_message_of_type(message, message_types.MESSAGE_TYPE_QUERY_COMMAND_PROCESSING_STATUS):
+
+				# Router wants to know the status of a previously submitted command. Check the status of the command, and send a response.
+				reference_id = message['REFERENCE_ID']
+				if reference_id in self.results_cache_dict:
+					# Result is present. i.e. processing has finished !
+					self.socket.send_json(self.results_cache_dict[reference_id])
+					del self.results_cache_dict[reference_id]
+				else:
+					keepalive_request = message_types_obj.get_status_message(message_types.STATUS_KEEP_ALIVE, self.server_node_id)
+					self.logger_obj.log(logger.LOG_LEVEL_INFO, 'Sending keepalive m=%s' %(keepalive_request))
+					self.socket.send_json(keepalive_request)
 
 			elif message_types_obj.is_message_of_type(message, message_types.MESSAGE_TYPE_STATUS_UPDATE):
 
@@ -354,49 +475,111 @@ class worker_server:
 					command_details = self.work_queue.get_next_command_to_run()
 					if command_details:
 						command_request = message_types_obj.get_command_message(message_types.COMMAND_TYPE_EXECUTE, self.server_node_id, command_details)
+						client_id = message['NODE_ID']
+						self.client_id_dict[client_id]['command_id'] += 1
 						self.socket.send_json(command_request)
+
+						reference_id = command_details['REFERENCE_ID']
+						self.pending_submit_dict[reference_id] = ('PROCESSING', client_id)
+						self.reverse_submit_dict[client_id] = reference_id
 					else:
 						keepalive_request = message_types_obj.get_status_message(message_types.STATUS_KEEP_ALIVE, self.server_node_id)
 						self.logger_obj.log(logger.LOG_LEVEL_INFO, 'Sending keepalive m=%s' %(keepalive_request))
 						self.socket.send_json(keepalive_request)
 
+class worker_router:
+
+	def __init__(self, logger_obj = None):
+
+		self.port = '6096'
+		self.context = zmq.Context()
+		self.socket = self.context.socket(zmq.REQ)
+		self.socket.connect('tcp://localhost:' + self.port)
+
+		if logger_obj:
+			self.logger_obj = logger_obj
+		else:
+			self.logger_obj = logger()
+
+	def test_router(self):
+
+		command_to_run = 'ls'
+		command_arguments = [ ]
+		command_directory = None
+		self.start(command_to_run, command_arguments, command_directory)
+
+	def start(self, program_name, arguments_list, directory_path):
+
+		message_types_obj = message_types()
+
+		# Step 0 - Initial hello message
+		message = message_types_obj.get_initial_hello_message()
+		self.socket.send_json(message)
+		response_message = self.socket.recv_json()
+		if message_types_obj.is_message_of_type(response_message, message_types.MESSAGE_TYPE_INITIAL_RESPONSE):
+			client_id = response_message['CLIENT_ID']
+			self.logger_obj.log(logger.LOG_LEVEL_INFO, 'Received initial hello response m=%s' %(response_message))
+		else:
+			## Unexpected response received from the server
+			self.logger_obj.log(logger.LOG_LEVEL_ERROR, 'Unexpected response received from server m=%s' %(response_message))
+			return
+
+		command_details = { }
+		command_details['COMMAND_TO_RUN'] = program_name
+		command_details['COMMAND_DIRECTORY'] = directory_path
+		command_details['COMMAND_ARGUMENTS'] = arguments_list
+		command_details['SEQUENCE_NUMBER'] = None
+
+		request_message = message_types_obj.get_submit_command_message(client_id, command_details)
+		self.socket.send_json(request_message)
+
+		response_message = self.socket.recv_json()
+		if message_types_obj.is_message_of_type(response_message, message_types.MESSAGE_TYPE_STATUS_UPDATE):
+			more_info_dict = message_types_obj.get_more_info_from_status_message(response_message)
+			reference_id = more_info_dict['REFERENCE_ID']
+		else:
+			## Unexpected response received from the server
+			self.logger_obj.log(logger.LOG_LEVEL_ERROR, 'Unexpected response received from server m=%s' %(response_message))
+			return
+
+		default_sleep_interval = 10
+
+		while True:
+
+			status_request_message = message_types_obj.get_query_command_processing_message(client_id, reference_id)
+			self.socket.send_json(status_request_message)
+
+			response_message = self.socket.recv_json()
+			if message_types_obj.is_message_of_type(response_message, message_types.MESSAGE_TYPE_STATUS_UPDATE):
+				server_status = response_message['STATUS']
+				if server_status == message_types.STATUS_KEEP_ALIVE:
+					time.sleep(default_sleep_interval)
+			elif message_types_obj.is_message_of_type(response_message, message_types.MESSAGE_TYPE_COMMAND_RESPONSE):
+				self.logger_obj.log(logger.LOG_LEVEL_INFO, 'Received command response m=%s' %(response_message))
+				break
+
 class work_queue:
 
 	def __init__(self):
 
-		self.index = 0
-		self.command_list = self.get_static_list_of_commands()
+		self.command_list = Queue()
 
-	def get_static_list_of_commands(self):
+	def put_command_in_queue(self, item):
 
-		command_list = []
-
-		for i in range(10):
-
-			command_details = { }
-
-			command_details['SEQUENCE_NUMBER'] = i
-			command_details['COMMAND_TO_RUN'] = 'sleep'
-			command_details['COMMAND_DIRECTORY'] = None
-			command_details['COMMAND_ARGUMENTS'] = [ 10 ]
-
-			command_list.append(command_details)
-
-		return command_list
+		self.command_list.put(item)
 
 	def get_next_command_to_run(self):
 
 		command_details = None
 
-		if self.index < len(self.command_list):
-			command_details = self.command_list[self.index]
-			self.index += 1
+		if not self.command_list.empty():
+			command_details = self.command_list.get()
 
 		return command_details
 
 if __name__ == '__main__':
 
-	type_of_services = [ 'WORKER_SERVER', 'WORKER_CLIENT', 'CONTROLLER' ]
+	type_of_services = [ 'WORKER_SERVER', 'WORKER_CLIENT', 'CONTROLLER', 'ROUTER' ]
 
 	arguments = sys.argv[1:]
 	if len(arguments) > 0 and (arguments[0] in type_of_services):
@@ -409,6 +592,8 @@ if __name__ == '__main__':
 			worker_client().start()
 		elif type_of_service == 'CONTROLLER':
 			controller().start()
+		elif type_of_service == 'ROUTER':
+			worker_router().test_router()
 
 	else:
 		print 'Usage: %s %s' %(sys.argv[0], ['|'.join(type_of_services)])
