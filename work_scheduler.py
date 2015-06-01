@@ -84,7 +84,10 @@ class message_types:
 	COMMAND_TYPE_TEST = 'COMMAND_TEST'
 	COMMAND_TYPE_GET_INFO = 'COMMAND_GET_INFO'
 
-	def get_command_message(self, command, node_id, command_details = { }):
+	IOCTL_SUBCOMMAND_CLIENT_INFO = 'IOCTL_SUBCOMMAND_CLIENT_INFO'
+	IOCTL_SUBCOMMAND_PENDING_COMMANDS_INFO = 'IOCTL_SUBCOMMAND_PENDING_COMMANDS_INFO'
+
+	def get_command_message(self, command, subcommand, node_id, command_details = { }):
 
 		message = { }
 
@@ -92,6 +95,7 @@ class message_types:
 		message['MESSAGE_TYPE'] = message_types.MESSAGE_TYPE_COMMAND
 		assert(command in permitted_command_types)
 		message['COMMAND'] = command
+		message['SUBCOMMAND'] = subcommand
 		message['NODE_ID'] = node_id
 		message['COMMAND_DETAILS'] = command_details
 
@@ -112,7 +116,7 @@ class message_types:
 
 	def get_submit_command_message(self, node_id, command_details = { }):
 
-		message = self.get_command_message(message_types.COMMAND_TYPE_EXECUTE, node_id, command_details)
+		message = self.get_command_message(message_types.COMMAND_TYPE_EXECUTE, None, node_id, command_details)
 		message['MESSAGE_TYPE'] = message_types.MESSAGE_TYPE_SUBMIT_COMMAND_FOR_PROCESSING
 		return message
 
@@ -263,7 +267,7 @@ class controller:
 
 	def start(self):
 
-		permitted_options = [ 'EXIT', 'GET_CLIENTS_INFO' ]
+		permitted_options = [ 'EXIT', 'GET_CLIENT_INFO', 'GET_PENDING_COMMANDS_INFO' ]
 
 		message_types_obj = message_types()
 
@@ -290,16 +294,19 @@ class controller:
 			
 			if user_input == 'EXIT':
 				return
-			elif user_input == 'GET_CLIENTS_INFO':
-				message = message_types_obj.get_command_message(message_types.COMMAND_TYPE_GET_INFO, client_id)
-				self.socket.send_json(message)
-				response_message = self.socket.recv_json()
-				if message_types_obj.is_message_of_type(response_message, message_types.MESSAGE_TYPE_COMMAND_RESPONSE):
-					self.logger_obj.log(logger.LOG_LEVEL_INFO, 'Received response m=%s' %(response_message))
-				else:
-					## Unexpected response received from the server
-					self.logger_obj.log(logger.LOG_LEVEL_ERROR, 'Unexpected response received from server m=%s' %(response_message))
-					return
+			elif user_input == 'GET_CLIENT_INFO':
+				message = message_types_obj.get_command_message(message_types.COMMAND_TYPE_GET_INFO, message_types.IOCTL_SUBCOMMAND_CLIENT_INFO, client_id)
+			elif user_input == 'GET_PENDING_COMMANDS_INFO':
+				message = message_types_obj.get_command_message(message_types.COMMAND_TYPE_GET_INFO, message_types.IOCTL_SUBCOMMAND_PENDING_COMMANDS_INFO, client_id)
+
+			self.socket.send_json(message)
+			response_message = self.socket.recv_json()
+			if message_types_obj.is_message_of_type(response_message, message_types.MESSAGE_TYPE_COMMAND_RESPONSE):
+				self.logger_obj.log(logger.LOG_LEVEL_INFO, 'Received response m=%s' %(response_message))
+			else:
+				## Unexpected response received from the server
+				self.logger_obj.log(logger.LOG_LEVEL_ERROR, 'Unexpected response received from server m=%s' %(response_message))
+				return
 
 class worker_server:
 
@@ -357,9 +364,15 @@ class worker_server:
 			elif message_types_obj.is_message_of_type(message, message_types.MESSAGE_TYPE_COMMAND):
 				self.logger_obj.log(logger.LOG_LEVEL_INFO, 'Received command message m=%s' %(message))
 				command = message['COMMAND']
+				subcommand = message['SUBCOMMAND']
 				if(command == message_types.COMMAND_TYPE_GET_INFO):
-					command_response_details = { 'CURRENT_CLIENTS' : self.client_id_dict }
 
+					if(subcommand == message_types.IOCTL_SUBCOMMAND_CLIENT_INFO):
+						command_response_details = { 'CURRENT_CLIENTS' : self.client_id_dict }
+					elif(subcommand == message_types.IOCTL_SUBCOMMAND_PENDING_COMMANDS_INFO):
+						command_response_details = { 'PENDING_COMMANDS' : self.pending_submit_dict }
+
+				response_message = message_types_obj.get_command_response_message(command, self.server_node_id, command_response_details)
 				self.socket.send_json(response_message)
 
 			elif message_types_obj.is_message_of_type(message, message_types.MESSAGE_TYPE_COMMAND_RESPONSE):
@@ -417,7 +430,7 @@ class worker_server:
 
 					command_details = self.work_queue.get_next_command_to_run()
 					if command_details:
-						command_request = message_types_obj.get_command_message(message_types.COMMAND_TYPE_EXECUTE, self.server_node_id, command_details)
+						command_request = message_types_obj.get_command_message(message_types.COMMAND_TYPE_EXECUTE, None, self.server_node_id, command_details)
 						client_id = message['NODE_ID']
 						self.client_id_dict[client_id]['command_id'] += 1
 						self.socket.send_json(command_request)
@@ -452,6 +465,8 @@ class worker_router:
 		logger_obj = logger()
 
 		message_types_obj = message_types()
+
+		command_output = None
 
 		# Step 0 - Initial hello message
 		message = message_types_obj.get_initial_hello_message()
@@ -495,6 +510,8 @@ class worker_router:
 				server_status = response_message['STATUS']
 				if server_status == message_types.STATUS_KEEP_ALIVE:
 					time.sleep(default_sleep_interval)
+				elif server_status == message_types.STATUS_ERROR:
+					break
 			elif message_types_obj.is_message_of_type(response_message, message_types.MESSAGE_TYPE_COMMAND_RESPONSE):
 				logger_obj.log(logger.LOG_LEVEL_INFO, 'Received command response m=%s' %(response_message))
 
@@ -522,6 +539,7 @@ class work_queue:
 			command_details = self.command_list.get()
 
 		return command_details
+
 
 if __name__ == '__main__':
 
