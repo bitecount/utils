@@ -6,9 +6,7 @@ import sys
 import subprocess
 from Queue import Queue
 import random
-
-#SERVER_IP = '172.16.20.137'
-SERVER_IP = 'localhost'
+import json
 
 class logger:
 
@@ -22,7 +20,12 @@ class logger:
 		self.default_log_levels = [ logger.LOG_LEVEL_DEBUG, logger.LOG_LEVEL_ERROR ]
 
 		if allow_log_levels:
-			self.allow_log_levels = allow_log_levels
+			if type(allow_log_levels) == type('ALL') and allow_log_levels == 'ALL':
+				self.allow_log_levels = self.all_log_levels
+			elif type(allow_log_levels) == type([]):
+				self.allow_log_levels = allow_log_levels
+			else:
+				self.allow_log_levels = self.default_log_levels
 		else:
 			self.allow_log_levels = self.default_log_levels
 		self.noop = noop
@@ -166,11 +169,10 @@ class worker_client:
 
 	def __init__(self, config_obj = { } ):
 
-		self.port = '6096'
 		self.context = zmq.Context()
 		self.socket = self.context.socket(zmq.REQ)
 
-		uri = 'tcp://%s:%s' %(SERVER_IP, self.port)
+		uri = 'tcp://%s:%s' %(config_obj['server_ip'], config_obj['server_port'])
 		self.socket.connect(uri)
 
 		self.logger_obj = config_obj.get('logger_obj')
@@ -226,22 +228,21 @@ class worker_client:
 		if message_types_obj.is_message_of_type(response_message, message_types.MESSAGE_TYPE_INITIAL_RESPONSE):
 			client_id = response_message['CLIENT_ID']
 			server_incarnation_num = response_message['SERVER_INCARNATION_NUM']
-			self.logger_obj.log(logger.LOG_LEVEL_INFO, 'Received initial hello response m=%s' %(response_message))
+			self.logger_obj.log(logger.LOG_LEVEL_DEBUG, 'RECV hello_response m=%s' %(response_message))
 		else:
 			## Unexpected response received from the server
-			self.logger_obj.log(logger.LOG_LEVEL_ERROR, 'Unexpected response received from server m=%s' %(response_message))
+			self.logger_obj.log(logger.LOG_LEVEL_ERROR, 'INVAL response m=%s' %(response_message))
 			return
 
 		while True:
 
 			# Step 1 - Tell the server that the worker is ready
 			message = message_types_obj.get_status_message(message_types.STATUS_READY, client_id)
-			self.logger_obj.log(logger.LOG_LEVEL_INFO, 'Sending ready message m=%s' %(message))
+			self.logger_obj.log(logger.LOG_LEVEL_INFO, 'SEND ready m=%s' %(message))
 			self.socket.send_json(message)
 
 			# Step 2 - Accept a request from the co-ordinator
 			message = self.socket.recv_json()
-			self.logger_obj.log(logger.LOG_LEVEL_INFO, 'Response from server m=%s' %(message))
 			if message_types_obj.is_message_of_type(message, message_types.MESSAGE_TYPE_COMMAND):
 				# Received a command, now execute it
 	
@@ -255,9 +256,12 @@ class worker_client:
 					self.socket.send_json(response_message)
 
 					response_from_server = self.socket.recv_json()
-					self.logger_obj.log(logger.LOG_LEVEL_INFO, 'Received response m=[%s]' %(response_from_server))
+					self.logger_obj.log(logger.LOG_LEVEL_DEBUG, 'RECV response m=[%s]' %(response_from_server))
 
 				elif command == message_types.COMMAND_TYPE_EXECUTE:
+
+					self.logger_obj.log(logger.LOG_LEVEL_DEBUG, 'RECV command_request m=[%s]' %(message))
+
 					command_details = message_types_obj.get_command_details(message)
 
 					#### Execute the command and fetch the results !!
@@ -265,11 +269,12 @@ class worker_client:
 
 					#### Send the results to the server !!
 					response_message = message_types_obj.get_command_response_message(command, client_id, server_incarnation_num, command_response_details)
+					self.logger_obj.log(logger.LOG_LEVEL_DEBUG, 'SEND command_response m=[%s]' %(response_message))
 					self.socket.send_json(response_message)
 
 					#### Wait for response from the server !!
 					response_from_server = self.socket.recv_json()
-					self.logger_obj.log(logger.LOG_LEVEL_INFO, 'Received response m=[%s]' %(response_from_server))
+					self.logger_obj.log(logger.LOG_LEVEL_INFO, 'RECV response m=[%s]' %(response_from_server))
 
 			elif message_types_obj.is_message_of_type(message, message_types.MESSAGE_TYPE_STATUS_UPDATE):
 
@@ -281,10 +286,9 @@ class controller:
 
 	def __init__(self, config_obj = { } ):
 
-		self.port = '6096'
 		self.context = zmq.Context()
 		self.socket = self.context.socket(zmq.REQ)
-		uri = 'tcp://%s:%s' %(SERVER_IP, self.port)
+		uri = 'tcp://%s:%s' %(config_obj['server_ip'], config_obj['server_port'])
 		self.socket.connect(uri)
 
 		self.logger_obj = config_obj.get('logger_obj')
@@ -536,10 +540,9 @@ class worker_router:
 
 	def start(self, program_name, arguments_list, directory_path, timeout_s = 3):
 
-		port = '6096'
 		context = zmq.Context()
 		socket = context.socket(zmq.REQ)
-		uri = 'tcp://%s:%s' %(SERVER_IP, port)
+		uri = 'tcp://%s:%s' %(config_obj['server_ip'], config_obj['server_port'])
 		socket.connect(uri)
 		socket.setsockopt(zmq.LINGER, 0)
 
@@ -563,10 +566,10 @@ class worker_router:
 		if message_types_obj.is_message_of_type(response_message, message_types.MESSAGE_TYPE_INITIAL_RESPONSE):
 			client_id = response_message['CLIENT_ID']
 			server_incarnation_num = response_message['SERVER_INCARNATION_NUM']
-			logger_obj.log(logger.LOG_LEVEL_INFO, 'Received initial hello response m=%s' %(response_message))
+			logger_obj.log(logger.LOG_LEVEL_INFO, 'RECV hello_response m=%s' %(response_message))
 		else:
 			## Unexpected response received from the server
-			logger_obj.log(logger.LOG_LEVEL_ERROR, 'Unexpected response received from server m=%s' %(response_message))
+			logger_obj.log(logger.LOG_LEVEL_ERROR, 'INVAL response m=%s' %(response_message))
 			return command_output
 
 		command_details = { }
@@ -587,12 +590,12 @@ class worker_router:
 			reference_id = more_info_dict['REFERENCE_ID']
 		else:
 			## Unexpected response received from the server
-			logger_obj.log(logger.LOG_LEVEL_ERROR, 'Unexpected response received from server m=%s' %(response_message))
+			logger_obj.log(logger.LOG_LEVEL_ERROR, 'INVAL response m=%s' %(response_message))
 			return command_output
 
 		default_sleep_interval = 1
 		number_of_attempts = 0
-		max_number_of_attempts = 10
+		max_number_of_attempts = 8
 
 		while True:
 
@@ -612,9 +615,11 @@ class worker_router:
 					time.sleep(default_sleep_interval)
 
 				elif server_status == message_types.STATUS_ERROR:
+					logger_obj.log(logger.LOG_LEVEL_ERROR, 'RECV error m=%s' %(response_message))
 					break
 			elif message_types_obj.is_message_of_type(response_message, message_types.MESSAGE_TYPE_COMMAND_RESPONSE):
-				logger_obj.log(logger.LOG_LEVEL_INFO, 'Received command response m=%s' %(response_message))
+
+				logger_obj.log(logger.LOG_LEVEL_DEBUG, 'RECV command_response m=%s' %(response_message))
 
 				response_details = message_types_obj.get_command_response_details(response_message)
 				command_output = response_details['COMMAND_OUTPUT']
@@ -647,9 +652,25 @@ def get_config_obj_from_str(config_str):
 
 	try:
 		input_config_obj = json.loads(config_str)
-		config_obj = input_config_obj
 	except:
-		pass
+		input_config_obj = { }
+
+	if 'disable_logs' in input_config_obj:
+		disable_logs = input_config_obj['disable_logs']
+		if disable_logs:
+			config_obj['logger_obj'] = logger(noop = True)
+	elif input_config_obj.get('verbose'):
+		config_obj['logger_obj'] = logger(noop = False, allow_log_levels = 'ALL')
+
+	if 'server_ip' in input_config_obj:
+		config_obj['server_ip'] = input_config_obj['server_ip']
+	else:
+		config_obj['server_ip'] = 'localhost'
+
+	if 'server_port' in input_config_obj:
+		config_obj['server_port'] = input_config_obj['server_port']
+	else:
+		config_obj['server_port'] = '6096'
 
 	return config_obj
 
@@ -678,4 +699,11 @@ if __name__ == '__main__':
 			worker_router(config_obj).test_router_local()
 
 	else:
-		print 'Usage: %s %s' %(sys.argv[0], ['|'.join(list_of_services)])
+		sample_options = { }
+		sample_options['disable_logs'] = 1
+		#sample_options['verbose'] = 0
+		sample_options['server_ip'] = '172.16.20.137'
+		sample_options['server_port'] = '6096'
+
+		sample_options_str = json.dumps(sample_options)
+		print "Usage: %s '%s' '%s'" %(sys.argv[0], '|'.join(list_of_services), sample_options_str)
